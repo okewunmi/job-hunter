@@ -1518,7 +1518,7 @@ export interface RawJobData {
 
 // ─── HTTP HELPER WITH RETRY ───────────────────────────────────────────────
 
-async function fetchWithRetry(url: string, options: RequestInit = {}, retries = 2): Promise<Response> {
+async function fetchWithRetry(url: string, options: RequestInit = {}, retries = 1): Promise<Response> {
   const headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Accept': 'application/json, text/html, */*',
@@ -1527,13 +1527,22 @@ async function fetchWithRetry(url: string, options: RequestInit = {}, retries = 
   };
   for (let i = 0; i <= retries; i++) {
     try {
-      const res = await fetch(url, { ...options, headers });
-      if (res.status === 429 && i < retries) {
-        await sleep(2000 * (i + 1)); // exponential backoff
-        continue;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15000); // 15s timeout
+      try {
+        const res = await fetch(url, { ...options, headers, signal: controller.signal });
+        clearTimeout(timeout);
+        if (res.status === 429 && i < retries) {
+          await sleep(2000 * (i + 1));
+          continue;
+        }
+        return res;
+      } finally {
+        clearTimeout(timeout);
       }
-      return res;
-    } catch (e) {
+    } catch (e: any) {
+      // Abort/timeout = don't retry, just fail fast
+      if (e?.name === 'AbortError' || e?.code === 'UND_ERR_CONNECT_TIMEOUT') throw e;
       if (i === retries) throw e;
       await sleep(1000 * (i + 1));
     }
@@ -2118,40 +2127,7 @@ async function fetchMyJobMag(keywords: string[]): Promise<RawJobData[]> {
   return results;
 }
 
-// ─── SOURCE 16: NGCAREERS NIGERIA ────────────────────────────────────────
-
-async function fetchNgCareers(keywords: string[]): Promise<RawJobData[]> {
-  const results: RawJobData[] = [];
-  for (const kw of keywords.slice(0, 3)) {
-    try {
-      const res = await fetchWithRetry(
-        `https://ngcareers.com/jobs?q=${encodeURIComponent(kw)}&format=json`,
-        { headers: { 'Accept': 'application/json' } }
-      );
-      if (!res.ok) continue;
-      const data = await res.json();
-      for (const job of (data.jobs || data.data || []).slice(0, 15)) {
-        const desc = clean(job.description || '');
-        results.push({
-          title: job.title,
-          company: job.company || 'Unknown',
-          location: job.location || 'Nigeria',
-          job_type: /remote/i.test(job.work_type || '') ? 'remote' : 'onsite',
-          description: desc,
-          requirements: extractRequirements(desc),
-          nice_to_have: [],
-          apply_url: job.url || job.apply_url || `https://ngcareers.com/job/${job.slug || job.id}`,
-          apply_email: job.apply_email || extractEmail(desc),
-          application_method: (job.apply_email || extractEmail(desc)) ? 'email' : 'form',
-          source: 'ngcareers',
-          source_id: String(job.id || job.slug),
-          salary_currency: 'NGN',
-        });
-      }
-    } catch (e) { console.warn('[NgCareers]', e); }
-  }
-  return results;
-}
+// NgCareers removed — API returns HTML not JSON
 
 // ─── SOURCE 17: WELLFOUND (AngelList) ────────────────────────────────────
 // Startup jobs — great for remote React Native roles
@@ -2630,44 +2606,39 @@ export async function searchForJobs(profile: UserProfile): Promise<
     'Solutions Engineer',
   ];
 
-  console.log('[search] Fetching from 20 sources in parallel...');
+  // Wrap every source — no single failure can crash the whole search
+  const safe = <T>(p: Promise<T[]>): Promise<T[]> => p.catch(() => [] as T[]);
 
-  const [
-    s1, s2, s3, s4, s5, s6, s7, s8, s9, s10,
-    s11, s12, s13, s14, s15, s16, s17, s18, s19, s20,
-    s21, s22, s23, s24, s25, s26
-  ] = await Promise.allSettled([
-    fetchRemotive(keywords.slice(0, 6)),
-    fetchJobicy(keywords.slice(0, 6)),
-    fetchRemoteOK(keywords.slice(0, 4)),
-    fetchWeWorkRemotely(keywords),
-    fetchHimalayas(keywords.slice(0, 5)),
-    fetchArbeitnow(keywords.slice(0, 4)),
-    fetchFindwork(keywords.slice(0, 4)),
-    fetchAdzuna(keywords.slice(0, 4), profile.preferred_locations),
-    fetchTheMuse(keywords.slice(0, 4)),
-    fetchGreenhouse(),
-    fetchLever(),
-    fetchIndeedRSS(keywords.slice(0, 5)),
-    fetchStackOverflowJobs(keywords.slice(0, 3)),
-    fetchJobberman(keywords.slice(0, 4)),
-    fetchMyJobMag(keywords.slice(0, 3)),
-    fetchNgCareers(keywords.slice(0, 3)),
-    fetchWellfound(keywords.slice(0, 3)),
-    fetchWorkable(),
-    fetchDevITJobs(keywords.slice(0, 2)),
-    fetchLinkedInPublic(keywords.slice(0, 3)),
-    // Global sources
-    fetchWorkingNomads(keywords),
-    fetchDailyRemote(keywords.slice(0, 4)),
-    fetchAdzunaGlobal(keywords.slice(0, 3)),
-    fetchJobgether(keywords.slice(0, 3)),
-    fetchTrulyRemote(keywords.slice(0, 3)),
-    fetchFreelancePlatforms(keywords.slice(0, 2)),
-  ]);
+  console.log('[search] Fetching from 25 sources in parallel...');
 
-  const sources = [s1,s2,s3,s4,s5,s6,s7,s8,s9,s10,s11,s12,s13,s14,s15,s16,s17,s18,s19,s20,s21,s22,s23,s24,s25,s26];
-  const all: RawJobData[] = sources.flatMap(s => s.status === 'fulfilled' ? s.value : []);
+  // Promise.all with safe() — every source gets its own error boundary
+  const all: RawJobData[] = (await Promise.all([
+    safe(fetchRemotive(keywords.slice(0, 6))),
+    safe(fetchJobicy(keywords.slice(0, 6))),
+    safe(fetchRemoteOK(keywords.slice(0, 4))),
+    safe(fetchWeWorkRemotely(keywords)),
+    safe(fetchHimalayas(keywords.slice(0, 5))),
+    safe(fetchArbeitnow(keywords.slice(0, 4))),
+    safe(fetchFindwork(keywords.slice(0, 4))),
+    safe(fetchAdzuna(keywords.slice(0, 4), profile.preferred_locations)),
+    safe(fetchTheMuse(keywords.slice(0, 4))),
+    safe(fetchGreenhouse()),
+    safe(fetchLever()),
+    safe(fetchIndeedRSS(keywords.slice(0, 5))),
+    safe(fetchStackOverflowJobs(keywords.slice(0, 3))),
+    safe(fetchJobberman(keywords.slice(0, 4))),
+    safe(fetchMyJobMag(keywords.slice(0, 3))),
+    safe(fetchWellfound(keywords.slice(0, 3))),
+    safe(fetchWorkable()),
+    safe(fetchDevITJobs(keywords.slice(0, 2))),
+    safe(fetchLinkedInPublic(keywords.slice(0, 3))),
+    safe(fetchWorkingNomads(keywords)),
+    safe(fetchDailyRemote(keywords.slice(0, 4))),
+    safe(fetchAdzunaGlobal(keywords.slice(0, 3))),
+    safe(fetchJobgether(keywords.slice(0, 3))),
+    safe(fetchTrulyRemote(keywords.slice(0, 3))),
+    safe(fetchFreelancePlatforms(keywords.slice(0, 2))),
+  ])).flat();
 
   const deduped = smartDedupe(all);
   console.log(`[search] Raw: ${all.length} → After smart dedupe: ${deduped.length} jobs from 26 sources`);
@@ -2836,23 +2807,51 @@ function keywordScore(
   job: Omit<Job, 'id' | 'user_id' | 'created_at' | 'updated_at'>,
   profile: UserProfile
 ): { score: number; reasons: string[] } {
-  const desc = (job.title + ' ' + job.description + ' ' + job.requirements.join(' ')).toLowerCase();
-  let score = 25;
+  const title = job.title.toLowerCase();
+  const desc = (title + ' ' + job.description + ' ' + job.requirements.join(' ')).toLowerCase();
   const reasons: string[] = [];
+  let score = 20; // base
+
+  // Title is the strongest signal — if title contains core skills, big boost
+  if (/react native/i.test(job.title)) {
+    score += 40;
+    reasons.push('React Native in job title');
+  } else if (/mobile (developer|engineer|app)/i.test(job.title)) {
+    score += 25;
+    reasons.push('Mobile developer role');
+  } else if (/(frontend|front-end|front end) (developer|engineer)/i.test(job.title)) {
+    score += 20;
+    reasons.push('Frontend developer role');
+  } else if (/react (developer|engineer)/i.test(job.title)) {
+    score += 18;
+    reasons.push('React developer role');
+  }
+
+  // Description/requirements skill matching
   for (const [skill, pts] of [
-    ['react native', 20], ['typescript', 10], ['javascript', 8],
-    ['react', 8], ['expo', 6], ['mobile', 5],
+    ['react native', 15], ['typescript', 8], ['javascript', 6],
+    ['react', 6], ['expo', 8], ['mobile', 4],
   ] as [string, number][]) {
     if (desc.includes(skill) && profile.skills.some(s => s.toLowerCase().includes(skill))) {
       score += pts;
-      if (reasons.length < 3) reasons.push(`Matches ${skill}`);
+      if (reasons.length < 4) reasons.push(`Matches ${skill}`);
     }
   }
-  for (const skill of ['next.js', 'redux', 'tailwind', 'firebase', 'node.js', 'figma']) {
+
+  // Bonus skills
+  for (const skill of ['next.js', 'redux', 'tailwind', 'firebase', 'node.js', 'figma', 'appwrite']) {
     if (desc.includes(skill) && profile.skills.some(s => s.toLowerCase().includes(skill))) score += 3;
   }
+
+  // Location bonuses
   if (/remote/i.test(job.location || '')) { score += 5; reasons.push('Remote position'); }
-  if (/nigeria|lagos|ibadan/i.test(job.location || '')) { score += 5; reasons.push('Nigeria/local role'); }
+  if (/nigeria|lagos|ibadan/i.test(job.location || '')) { score += 8; reasons.push('Nigeria/local role'); }
+
+  // Penalize clearly irrelevant roles (non-tech that slipped through)
+  if (/beautician|kosmetik|minijob|controlling|buchhalt|marketing manager|hr manager/i.test(job.title)) {
+    score = Math.min(score, 20);
+  }
+
   return { score: Math.min(95, score), reasons };
 }
 
