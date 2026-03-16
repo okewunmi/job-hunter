@@ -229,7 +229,7 @@ LinkedIn: ${profile.linkedin_url || ''}`;
     const result = await resend.emails.send({
       from: `${profile.full_name} <${FROM}>`,
       to: [job.apply_email],
-      replyTo: profile.email,
+      reply_to: profile.email,
       subject: coverLetter.subject_line,
       text: emailBody,
     });
