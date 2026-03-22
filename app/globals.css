@@ -194,3 +194,31 @@ body {
   animation: shimmer 1.5s infinite;
   border-radius: 6px;
 }
+
+/* ── Responsive ───────────────────────────────────────────────────────── */
+@media (max-width: 768px) {
+  .btn-primary, .btn-ghost {
+    padding: 8px 14px;
+    font-size: 13px;
+  }
+  .input-field {
+    font-size: 16px; /* prevents iOS zoom on focus */
+  }
+  /* Job card actions wrap on small screens */
+  [style*="display: 'flex', gap: 8, flexWrap: 'wrap'"] {
+    gap: 6px !important;
+  }
+  /* Status tabs scroll horizontally */
+  div[style*="borderBottom: '1px solid var(--border)'"] {
+    -webkit-overflow-scrolling: touch;
+  }
+  /* Stat cards minimum size */
+  [style*="gridTemplateColumns"] {
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)) !important;
+  }
+}
+
+@media (max-width: 480px) {
+  h1[style] { font-size: 20px !important; }
+  /* Stack job card meta on very small screens */
+}

@@ -39,7 +39,7 @@ export default function CoverLettersPage() {
   }
 
   return (
-    <div style={{ padding: '32px 36px' }}>
+    <div style={{ padding: 'clamp(16px, 4vw, 36px)' }}>
       <div style={{ marginBottom: 28 }}>
         <h1 style={{ fontSize: 26, fontWeight: 800, color: 'var(--text-primary)', marginBottom: 4 }}>Cover Letters</h1>
         <p style={{ color: 'var(--text-muted)', fontSize: 14 }}>AI-written, tailored cover letters for every job</p>
