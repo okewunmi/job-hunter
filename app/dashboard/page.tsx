@@ -362,7 +362,7 @@ export default function DashboardPage() {
             <StatCard icon={Briefcase} label="Total Jobs Found" value={stats?.total_found || 0}
               sub={`+${stats?.this_week_found || 0} this week`} color="#3b82f6" href="/dashboard/jobs" />
             <StatCard icon={Send} label="Applications Sent" value={stats?.total_applied || 0}
-              sub={`+${stats?.this_week_applied || 0} this week`} color="#10b981" href="/dashboard/jobs?status=applied" />
+              sub={`+${stats?.this_week_applied || 0} this week`} color="#10b981" href="/dashboard/jobs?status=email_sent" />
             <StatCard icon={Users} label="Interviews" value={stats?.total_interviews || 0}
               sub="Keep going!" color="#8b5cf6" href="/dashboard/jobs?status=interview" />
             <StatCard icon={Target} label="Avg Match Score" value={`${stats?.avg_match_score || 0}%`}
