@@ -95,7 +95,7 @@ function fallbackATS(job: Job, profile: UserProfile): ATSResult {
   const cvText = (profile.cv_text + ' ' + profile.skills.join(' ')).toLowerCase();
   const jdText = (job.description + ' ' + job.requirements.join(' ')).toLowerCase();
   const jdWords = jdText.match(/\b[a-z][a-z.+#]{2,}\b/g) || [];
-  const uniqueJdKeywords = [...new Set(jdWords)].filter(w => w.length > 3);
+  const uniqueJdKeywords = jdWords.filter((w, i, arr) => arr.indexOf(w) === i).filter(w => w.length > 3);
   const matches = uniqueJdKeywords.filter(w => cvText.includes(w)).slice(0, 8);
   const missing = job.requirements.filter(r => !cvText.includes(r.toLowerCase())).slice(0, 5);
   const score = Math.min(85, 30 + matches.length * 4);

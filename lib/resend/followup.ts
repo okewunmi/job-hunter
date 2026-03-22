@@ -41,7 +41,7 @@ Portfolio: ${profile.portfolio_url || ''} | GitHub: ${profile.github_url || ''}`
     const result = await resend.emails.send({
       from: `${profile.full_name} <${FROM}>`,
       to: [to],
-      replyTo: profile.email,
+      reply_to: profile.email,
       subject: `Re: ${originalSubject}`,
       text: body,
     });
