@@ -365,6 +365,8 @@
 //         for (const job of data.results || []) {
 //           if (!isRecentJob(job.created)) continue;
 //           const emailMatch = job.description?.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+//           // Use adref (direct company URL) if available — avoids geo-blocked redirect_url
+//           const applyUrl = job.adref || job.redirect_url;
 //           results.push({
 //             title: job.title,
 //             company: job.company?.display_name || 'Unknown',
@@ -373,7 +375,7 @@
 //             description: (job.description || '').slice(0, 2000),
 //             requirements: extractRequirements(job.description || ''),
 //             nice_to_have: [],
-//             apply_url: job.redirect_url,
+//             apply_url: applyUrl,
 //             apply_email: emailMatch?.[0],
 //             application_method: emailMatch ? 'email' : 'manual',
 //             source: 'adzuna',
@@ -593,38 +595,48 @@
 //   return results;
 // }
 
-// // ─── SOURCE 14: JOBBERMAN NIGERIA ────────────────────────────────────────
-// // Africa's largest job board — critical for local Lagos/Nigeria roles
+// // ─── SOURCE 14: JOBBERMAN (via public search page scraping) ─────────────
+// // Jobberman's API requires auth — scrape their public search RSS instead
 
 // async function fetchJobberman(keywords: string[]): Promise<RawJobData[]> {
 //   const results: RawJobData[] = [];
 //   for (const kw of keywords.slice(0, 4)) {
 //     try {
 //       const res = await fetchWithRetry(
-//         `https://www.jobberman.com/api/v3/jobs?q=${encodeURIComponent(kw)}&location=nigeria&page=1&limit=20`,
-//         { headers: { 'Accept': 'application/json', 'x-app-type': 'web' } }
+//         `https://www.jobberman.com/jobs?q=${encodeURIComponent(kw)}&l=nigeria`,
+//         { headers: { 'Accept': 'text/html', 'Accept-Language': 'en-US,en;q=0.9' } }
 //       );
 //       if (!res.ok) continue;
-//       const data = await res.json();
-//       const jobs = data.data || data.jobs || data.results || [];
-//       for (const job of jobs.slice(0, 20)) {
-//         const desc = clean(job.description || job.summary || '');
+//       const html = await res.text();
+//       // Extract job cards from Jobberman HTML
+//       const cards = html.match(/data-job-id="([^"]+)"[\s\S]{0,2000}?<a[^>]+href="(\/jobs\/[^"]+)"[^>]*>([^<]+)<\/a>/g) || [];
+//       // Simple extraction: find all job links + titles
+//       const jobLinks: string[] = [];
+//       const jobTitles: string[] = [];
+//       const companies: string[] = [];
+//       let m: RegExpExecArray | null;
+//       const linkRx = /href="(https:\/\/www\.jobberman\.com\/jobs\/[^"?#]+)"/g;
+//       while ((m = linkRx.exec(html)) !== null) jobLinks.push(m[1]);
+//       const titleRx = /<h2[^>]*>\s*<a[^>]*>([^<]+)<\/a>/g;
+//       while ((m = titleRx.exec(html)) !== null) jobTitles.push(m[1].trim());
+//       const companyRx = /class="[^"]*company[^"]*"[^>]*>\s*([^<]{2,60})\s*</g;
+//       while ((m = companyRx.exec(html)) !== null) { const c = m[1].trim(); if (c.length > 1) companies.push(c); }
+//             for (let i = 0; i < Math.min(jobLinks.length, 15); i++) {
+//         const title = jobTitles[i] || kw;
+//         const company = companies[i] || 'Nigerian Company';
+//         if (!title || title.length < 3) continue;
 //         results.push({
-//           title: job.title || job.position,
-//           company: job.company?.name || job.employer || 'Unknown',
-//           location: job.location || 'Lagos, Nigeria',
-//           job_type: /remote/i.test(job.work_type || job.location || '') ? 'remote' : 'onsite',
-//           description: desc,
-//           requirements: extractRequirements(desc),
+//           title,
+//           company,
+//           location: 'Lagos, Nigeria',
+//           job_type: 'onsite',
+//           description: `${title} at ${company} — Lagos, Nigeria. Apply on Jobberman for full details.`,
+//           requirements: extractRequirements(title),
 //           nice_to_have: [],
-//           apply_url: job.url || `https://www.jobberman.com/jobs/${job.slug || job.id}`,
-//           apply_email: extractEmail(desc),
-//           application_method: extractEmail(desc) ? 'email' : 'form',
+//           apply_url: jobLinks[i],
+//           application_method: 'manual',
 //           source: 'jobberman',
-//           source_id: String(job.id || job.slug),
-//           posted_at: job.created_at || job.published_at,
-//           salary_min: job.salary?.min,
-//           salary_max: job.salary?.max,
+//           source_id: jobLinks[i].split('/').pop() || String(i),
 //           salary_currency: 'NGN',
 //         });
 //       }
@@ -633,33 +645,39 @@
 //   return results;
 // }
 
-// // ─── SOURCE 15: MYJOBMAG NIGERIA ─────────────────────────────────────────
+// // ─── SOURCE 15: MYJOBMAG — via RSS feed ──────────────────────────────────
 
 // async function fetchMyJobMag(keywords: string[]): Promise<RawJobData[]> {
 //   const results: RawJobData[] = [];
 //   for (const kw of keywords.slice(0, 3)) {
 //     try {
 //       const res = await fetchWithRetry(
-//         `https://www.myjobmag.com/jobs-in-nigeria/search/?q=${encodeURIComponent(kw)}&format=json`,
-//         { headers: { 'Accept': 'application/json' } }
+//         `https://www.myjobmag.com/rss/jobs-in-nigeria/?search=${encodeURIComponent(kw)}`,
+//         { headers: { 'Accept': 'application/rss+xml, text/xml' } }
 //       );
 //       if (!res.ok) continue;
-//       const data = await res.json();
-//       for (const job of (data.jobs || data.results || []).slice(0, 15)) {
-//         const desc = clean(job.description || '');
+//       const xml = await res.text();
+//       const items = xml.match(/<item>([\s\S]*?)<\/item>/g) || [];
+//       for (const item of items.slice(0, 15)) {
+//         const title = stripXML(item.match(/<title>([\s\S]*?)<\/title>/)?.[1] || '');
+//         const link = stripXML(item.match(/<link>([\s\S]*?)<\/link>/)?.[1] || '').trim();
+//         const desc = stripXML(item.match(/<description>([\s\S]*?)<\/description>/)?.[1] || '');
+//         const company = stripXML(item.match(/<author>([\s\S]*?)<\/author>/)?.[1] || 'Unknown');
+//         const guid = item.match(/<guid[^>]*>([\s\S]*?)<\/guid>/)?.[1] || link;
+//         if (!title || !link) continue;
+//         const cleanDesc = desc.slice(0, 2000);
 //         results.push({
-//           title: job.title,
-//           company: job.company || 'Unknown',
-//           location: job.location || 'Nigeria',
-//           job_type: /remote/i.test(job.job_type || '') ? 'remote' : 'onsite',
-//           description: desc,
-//           requirements: extractRequirements(desc),
+//           title, company,
+//           location: 'Nigeria',
+//           job_type: /remote/i.test(title + cleanDesc) ? 'remote' : 'onsite',
+//           description: cleanDesc,
+//           requirements: extractRequirements(cleanDesc),
 //           nice_to_have: [],
-//           apply_url: job.url || `https://www.myjobmag.com${job.path || ''}`,
-//           apply_email: extractEmail(desc),
-//           application_method: extractEmail(desc) ? 'email' : 'form',
+//           apply_url: link,
+//           apply_email: extractEmail(cleanDesc),
+//           application_method: extractEmail(cleanDesc) ? 'email' : 'form',
 //           source: 'myjobmag',
-//           source_id: String(job.id),
+//           source_id: String(guid).split('/').pop() || String(guid).slice(-20),
 //           salary_currency: 'NGN',
 //         });
 //       }
@@ -668,7 +686,119 @@
 //   return results;
 // }
 
-// // NgCareers removed — API returns HTML not JSON
+// // ─── SOURCE 16B: NGCAREERS — via RSS feed ────────────────────────────────
+// // NgCareers has a working RSS feed even though their JSON API is broken
+
+// async function fetchNgCareersRSS(keywords: string[]): Promise<RawJobData[]> {
+//   const results: RawJobData[] = [];
+//   for (const kw of keywords.slice(0, 3)) {
+//     try {
+//       const res = await fetchWithRetry(
+//         `https://ngcareers.com/jobs/feed/?s=${encodeURIComponent(kw)}`,
+//         { headers: { 'Accept': 'application/rss+xml, text/xml' } }
+//       );
+//       if (!res.ok) continue;
+//       const xml = await res.text();
+//       const items = xml.match(/<item>([\s\S]*?)<\/item>/g) || [];
+//       for (const item of items.slice(0, 15)) {
+//         const title = stripXML(item.match(/<title>([\s\S]*?)<\/title>/)?.[1] || '');
+//         const link = stripXML(item.match(/<link>([\s\S]*?)<\/link>/)?.[1] || '').trim();
+//         const desc = stripXML(item.match(/<description>([\s\S]*?)<\/description>/)?.[1] || '');
+//         const company = stripXML(item.match(/<dc:creator>([\s\S]*?)<\/dc:creator>/)?.[1] || 'Unknown');
+//         const guid = item.match(/<guid[^>]*>([\s\S]*?)<\/guid>/)?.[1] || link;
+//         if (!title || !link) continue;
+//         const cleanDesc = desc.slice(0, 2000);
+//         results.push({
+//           title, company,
+//           location: 'Nigeria',
+//           job_type: /remote/i.test(title + cleanDesc) ? 'remote' : 'onsite',
+//           description: cleanDesc,
+//           requirements: extractRequirements(cleanDesc),
+//           nice_to_have: [],
+//           apply_url: link,
+//           apply_email: extractEmail(cleanDesc),
+//           application_method: extractEmail(cleanDesc) ? 'email' : 'form',
+//           source: 'ngcareers',
+//           source_id: String(guid).split('/').pop() || String(guid).slice(-20),
+//           salary_currency: 'NGN',
+//         });
+//       }
+//     } catch (e) { console.warn('[NgCareers RSS]', e); }
+//   }
+//   return results;
+// }
+
+// // ─── SOURCE AFRICA: OFFERZEN (South Africa + remote Africa) ──────────────
+
+// async function fetchOfferZen(keywords: string[]): Promise<RawJobData[]> {
+//   const results: RawJobData[] = [];
+//   for (const kw of keywords.slice(0, 3)) {
+//     try {
+//       const res = await fetchWithRetry(
+//         `https://www.offerzen.com/api/listings?technology=${encodeURIComponent(kw)}&location=remote`,
+//         { headers: { 'Accept': 'application/json' } }
+//       );
+//       if (!res.ok) continue;
+//       const data = await res.json();
+//       for (const job of (data.listings || data.jobs || data.data || []).slice(0, 15)) {
+//         const desc = clean(job.description || job.role_description || '');
+//         results.push({
+//           title: job.role || job.title || kw,
+//           company: job.company?.name || job.company_name || 'Unknown',
+//           location: job.remote ? 'Remote / Africa' : (job.location || 'South Africa'),
+//           job_type: job.remote ? 'remote' : 'onsite',
+//           description: desc,
+//           requirements: extractRequirements(desc),
+//           nice_to_have: [],
+//           apply_url: job.url || `https://www.offerzen.com/jobs/${job.slug || job.id}`,
+//           apply_email: extractEmail(desc),
+//           application_method: extractEmail(desc) ? 'email' : 'form',
+//           source: 'offerzen',
+//           source_id: String(job.id || job.slug),
+//           salary_currency: 'USD',
+//         });
+//       }
+//     } catch (e) { console.warn('[OfferZen]', e); }
+//   }
+//   return results;
+// }
+
+// // ─── SOURCE AFRICA: ANDELA TALENT NETWORK ────────────────────────────────
+// // Andela places African devs in global remote jobs — strong Nigeria presence
+
+// async function fetchAndela(keywords: string[]): Promise<RawJobData[]> {
+//   const results: RawJobData[] = [];
+//   for (const kw of keywords.slice(0, 3)) {
+//     try {
+//       const res = await fetchWithRetry(
+//         `https://apply.workable.com/api/v3/accounts/andela/jobs?search=${encodeURIComponent(kw)}`,
+//         { headers: { 'Accept': 'application/json' } }
+//       );
+//       if (!res.ok) continue;
+//       const data = await res.json();
+//       for (const job of (data.results || []).slice(0, 15)) {
+//         const title = job.title || '';
+//         const desc = clean(job.description || '');
+//         results.push({
+//           title,
+//           company: 'Andela (Global Remote)',
+//           location: 'Remote — Africa/Nigeria',
+//           job_type: 'remote',
+//           description: desc || `${title} — Remote position via Andela. Nigerian developers welcome.`,
+//           requirements: extractRequirements(desc),
+//           nice_to_have: [],
+//           apply_url: `https://apply.workable.com/andela/j/${job.shortcode}/`,
+//           apply_email: extractEmail(desc),
+//           application_method: extractEmail(desc) ? 'email' : 'form',
+//           source: 'andela',
+//           source_id: `andela-${job.shortcode}`,
+//           salary_currency: 'USD',
+//         });
+//       }
+//     } catch (e) { console.warn('[Andela]', e); }
+//   }
+//   return results;
+// }
 
 // // ─── SOURCE 17: WELLFOUND (AngelList) ────────────────────────────────────
 // // Startup jobs — great for remote React Native roles
@@ -932,7 +1062,7 @@
 //   const appKey = process.env.ADZUNA_APP_KEY;
 //   if (!appId || !appKey) return [];
 //   const results: RawJobData[] = [];
-//   // Comprehensive global country list
+//   // Full global country list — Adzuna supported countries
 //   const countries = [
 //     { code: 'ng', currency: 'NGN', label: 'Nigeria' },
 //     { code: 'gb', currency: 'GBP', label: 'United Kingdom' },
@@ -946,6 +1076,20 @@
 //     { code: 'in', currency: 'INR', label: 'India' },
 //     { code: 'sg', currency: 'SGD', label: 'Singapore' },
 //     { code: 'nz', currency: 'NZD', label: 'New Zealand' },
+//     { code: 'at', currency: 'EUR', label: 'Austria' },
+//     { code: 'be', currency: 'EUR', label: 'Belgium' },
+//     { code: 'br', currency: 'BRL', label: 'Brazil' },
+//     { code: 'mx', currency: 'MXN', label: 'Mexico' },
+//     { code: 'pl', currency: 'PLN', label: 'Poland' },
+//     { code: 'ru', currency: 'RUB', label: 'Russia' },
+//     { code: 'it', currency: 'EUR', label: 'Italy' },
+//     { code: 'es', currency: 'EUR', label: 'Spain' },
+//     { code: 'ch', currency: 'CHF', label: 'Switzerland' },
+//     { code: 'se', currency: 'SEK', label: 'Sweden' },
+//     { code: 'no', currency: 'NOK', label: 'Norway' },
+//     { code: 'dk', currency: 'DKK', label: 'Denmark' },
+//     { code: 'fi', currency: 'EUR', label: 'Finland' },
+//     { code: 'ae', currency: 'AED', label: 'UAE' },
 //   ];
 //   for (const country of countries) {
 //     for (const kw of keywords.slice(0, 2)) {
@@ -966,7 +1110,7 @@
 //             description: (job.description || '').slice(0, 2000),
 //             requirements: extractRequirements(job.description || ''),
 //             nice_to_have: [],
-//             apply_url: job.redirect_url,
+//             apply_url: job.adref || job.redirect_url,
 //             apply_email: emailMatch?.[0],
 //             application_method: emailMatch ? 'email' : 'manual',
 //             source: `adzuna_${country.code}`,
@@ -1114,36 +1258,242 @@
 //   return results;
 // }
 
+// // ─── SOURCE: EUREMOTEJOBS / JOBSINEUROPE ─────────────────────────────────
+// // Free RSS feeds covering Finland, Spain, Malta, Netherlands, Germany etc.
+
+// async function fetchEuropeJobs(keywords: string[]): Promise<RawJobData[]> {
+//   const results: RawJobData[] = [];
+
+//   // EuroJobSites RSS — covers all EU countries
+//   const feeds = [
+//     { url: 'https://www.eurojobs.com/rss/', label: 'Europe' },
+//     { url: 'https://www.jobsinfinland.fi/rss', label: 'Finland' },
+//     { url: 'https://www.jobsinbarcelona.es/rss', label: 'Spain' },
+//     { url: 'https://www.irishjobs.ie/Recruitment/RSS.aspx', label: 'Ireland' },
+//     { url: 'https://careers.eu/rss', label: 'Europe' },
+//   ];
+
+//   for (const feed of feeds) {
+//     try {
+//       const res = await fetchWithRetry(feed.url,
+//         { headers: { 'Accept': 'application/rss+xml, text/xml' } }
+//       );
+//       if (!res.ok) continue;
+//       const xml = await res.text();
+//       const items = xml.match(/<item>([\s\S]*?)<\/item>/g) || [];
+//       for (const item of items.slice(0, 15)) {
+//         const title = stripXML(item.match(/<title>([\s\S]*?)<\/title>/)?.[1] || '');
+//         const link = stripXML(item.match(/<link>([\s\S]*?)<\/link>/)?.[1] || '').trim();
+//         const desc = stripXML(item.match(/<description>([\s\S]*?)<\/description>/)?.[1] || '');
+//         const guid = item.match(/<guid[^>]*>([\s\S]*?)<\/guid>/)?.[1] || link;
+//         if (!title || !link) continue;
+//         const combined = (title + ' ' + desc).toLowerCase();
+//         if (!keywords.some(k => combined.includes(k.toLowerCase()))) continue;
+//         const cleanDesc = desc.slice(0, 2000);
+//         results.push({
+//           title, company: 'See listing',
+//           location: feed.label,
+//           job_type: /remote/i.test(combined) ? 'remote' : 'onsite',
+//           description: cleanDesc,
+//           requirements: extractRequirements(cleanDesc),
+//           nice_to_have: [],
+//           apply_url: link,
+//           apply_email: extractEmail(cleanDesc),
+//           application_method: extractEmail(cleanDesc) ? 'email' : 'form',
+//           source: 'eurojobs',
+//           source_id: String(guid).split('/').pop()?.slice(0, 60) || String(i),
+//         });
+//       }
+//     } catch (e) { console.warn('[EuroJobs]', e); }
+//   }
+//   return results;
+// }
+
+// // ─── SOURCE: NO FLUFF JOBS (Poland/EU tech jobs) ─────────────────────────
+
+// async function fetchNoFluffJobs(keywords: string[]): Promise<RawJobData[]> {
+//   const results: RawJobData[] = [];
+//   try {
+//     const res = await fetchWithRetry(
+//       'https://nofluffjobs.com/api/joboffers/main?salaryCurrency=USD&salaryPeriod=month&region=worldwide',
+//       { headers: { 'Accept': 'application/json', 'X-NFJOBS-API': '1' } }
+//     );
+//     if (!res.ok) return results;
+//     const data = await res.json();
+//     for (const job of (data.postings || data.items || []).slice(0, 30)) {
+//       const title = job.title || job.name || '';
+//       const combined = (title + ' ' + (job.technology || []).join(' ')).toLowerCase();
+//       if (!keywords.some(k => combined.includes(k.toLowerCase()))) continue;
+//       const loc = job.location?.places?.[0]?.city || job.location?.fullyRemote ? 'Remote / Europe' : 'Poland/EU';
+//       results.push({
+//         title,
+//         company: job.name || job.company?.name || 'Unknown',
+//         location: job.location?.fullyRemote ? 'Remote / Europe' : loc,
+//         job_type: job.location?.fullyRemote ? 'remote' : 'onsite',
+//         description: (job.requirements?.join(', ') || title),
+//         requirements: job.technology || extractRequirements(title),
+//         nice_to_have: [],
+//         apply_url: `https://nofluffjobs.com/job/${job.id}`,
+//         application_method: 'form',
+//         source: 'nofluffjobs',
+//         source_id: String(job.id),
+//         salary_min: job.salary?.from,
+//         salary_max: job.salary?.to,
+//         salary_currency: job.salary?.currency || 'USD',
+//       });
+//     }
+//   } catch (e) { console.warn('[NoFluffJobs]', e); }
+//   return results;
+// }
+
+// // ─── SOURCE: RELOCATE.ME (Europe + worldwide relocation jobs) ─────────────
+// // Jobs that offer relocation packages — good for Nigeria → Europe
+
+// async function fetchRelocateMe(keywords: string[]): Promise<RawJobData[]> {
+//   const results: RawJobData[] = [];
+//   for (const kw of keywords.slice(0, 3)) {
+//     try {
+//       const res = await fetchWithRetry(
+//         `https://relocate.me/api/jobs?q=${encodeURIComponent(kw)}&limit=20`,
+//         { headers: { 'Accept': 'application/json' } }
+//       );
+//       if (!res.ok) continue;
+//       const data = await res.json();
+//       for (const job of (data.jobs || data.data || []).slice(0, 15)) {
+//         const desc = clean(job.description || '');
+//         results.push({
+//           title: job.title,
+//           company: job.company?.name || 'Unknown',
+//           location: job.country || job.city || 'Europe',
+//           job_type: 'onsite',
+//           description: desc,
+//           requirements: extractRequirements(desc),
+//           nice_to_have: [],
+//           apply_url: job.url || `https://relocate.me/jobs/${job.id}`,
+//           apply_email: extractEmail(desc),
+//           application_method: extractEmail(desc) ? 'email' : 'form',
+//           source: 'relocateme',
+//           source_id: String(job.id),
+//           salary_currency: 'EUR',
+//         });
+//       }
+//     } catch (e) { console.warn('[Relocate.me]', e); }
+//   }
+//   return results;
+// }
+
+// // ─── SOURCE: TECH IN AFRICA / AFRICA TECH JOBS ───────────────────────────
+// // Dedicated Africa tech job boards
+
+// async function fetchAfricaTechJobs(keywords: string[]): Promise<RawJobData[]> {
+//   const results: RawJobData[] = [];
+
+//   // Tekedia — Nigeria tech jobs
+//   try {
+//     const res = await fetchWithRetry(
+//       'https://tekedia.com/jobs/feed/',
+//       { headers: { 'Accept': 'application/rss+xml, text/xml' } }
+//     );
+//     if (res.ok) {
+//       const xml = await res.text();
+//       const items = xml.match(/<item>([\s\S]*?)<\/item>/g) || [];
+//       for (const item of items.slice(0, 20)) {
+//         const title = stripXML(item.match(/<title>([\s\S]*?)<\/title>/)?.[1] || '');
+//         const link = stripXML(item.match(/<link>([\s\S]*?)<\/link>/)?.[1] || '').trim();
+//         const desc = stripXML(item.match(/<description>([\s\S]*?)<\/description>/)?.[1] || '');
+//         const guid = item.match(/<guid[^>]*>([\s\S]*?)<\/guid>/)?.[1] || link;
+//         if (!title || !link) continue;
+//         const combined = (title + ' ' + desc).toLowerCase();
+//         if (!keywords.some(k => combined.includes(k.toLowerCase()))) continue;
+//         results.push({
+//           title, company: 'See listing',
+//           location: 'Nigeria',
+//           job_type: /remote/i.test(combined) ? 'remote' : 'onsite',
+//           description: desc.slice(0, 2000),
+//           requirements: extractRequirements(desc),
+//           nice_to_have: [],
+//           apply_url: link,
+//           apply_email: extractEmail(desc),
+//           application_method: extractEmail(desc) ? 'email' : 'form',
+//           source: 'tekedia',
+//           source_id: String(guid).split('/').pop()?.slice(0, 60) || title.slice(0, 30),
+//         });
+//       }
+//     }
+//   } catch (e) { console.warn('[Tekedia]', e); }
+
+//   // Rise Networks Nigeria
+//   try {
+//     const res = await fetchWithRetry(
+//       'https://risenetworks.org/jobs/feed/',
+//       { headers: { 'Accept': 'application/rss+xml, text/xml' } }
+//     );
+//     if (res.ok) {
+//       const xml = await res.text();
+//       const items = xml.match(/<item>([\s\S]*?)<\/item>/g) || [];
+//       for (const item of items.slice(0, 15)) {
+//         const title = stripXML(item.match(/<title>([\s\S]*?)<\/title>/)?.[1] || '');
+//         const link = stripXML(item.match(/<link>([\s\S]*?)<\/link>/)?.[1] || '').trim();
+//         const desc = stripXML(item.match(/<description>([\s\S]*?)<\/description>/)?.[1] || '');
+//         const guid = item.match(/<guid[^>]*>([\s\S]*?)<\/guid>/)?.[1] || link;
+//         if (!title || !link) continue;
+//         const combined = (title + ' ' + desc).toLowerCase();
+//         if (!keywords.some(k => combined.includes(k.toLowerCase()))) continue;
+//         results.push({
+//           title, company: 'See listing',
+//           location: 'Lagos, Nigeria',
+//           job_type: /remote/i.test(combined) ? 'remote' : 'onsite',
+//           description: desc.slice(0, 2000),
+//           requirements: extractRequirements(desc),
+//           nice_to_have: [],
+//           apply_url: link,
+//           apply_email: extractEmail(desc),
+//           application_method: extractEmail(desc) ? 'email' : 'form',
+//           source: 'risenetworks',
+//           source_id: String(guid).split('/').pop()?.slice(0, 60) || title.slice(0, 30),
+//         });
+//       }
+//     }
+//   } catch (e) { console.warn('[RiseNetworks]', e); }
+
+//   return results;
+// }
+
 // // ─── MAIN SEARCH FUNCTION ─────────────────────────────────────────────────
 
 // export async function searchForJobs(profile: UserProfile): Promise<
 //   Array<Omit<Job, 'id' | 'user_id' | 'created_at' | 'updated_at'>>
 // > {
-//   // Tech + non-tech roles aligned with CV — cast the widest net
+//   // Broad keywords — junior/mid/senior + Nigeria-specific
 //   const keywords = [
-//     // Core mobile
-//     'React Native',
+//     // React Native — all levels
 //     'React Native Developer',
+//     'Junior React Native Developer',
+//     'Mid React Native Developer',
+//     'React Native',
+//     // Mobile — all levels
 //     'Mobile App Developer',
+//     'Junior Mobile Developer',
 //     'Mobile Developer',
 //     'Mobile Engineer',
-//     'iOS Android Developer',
 //     'Cross Platform Developer',
 //     'Expo Developer',
-//     // Frontend
+//     // Frontend — all levels
+//     'Junior Frontend Developer',
 //     'Frontend Developer',
 //     'React Developer',
 //     'JavaScript Developer',
 //     'TypeScript Developer',
 //     'Next.js Developer',
-//     // Adjacent non-tech roles CV qualifies for
+//     // Nigeria/Africa specific
+//     'Software Developer Nigeria',
+//     'Remote Developer Nigeria',
+//     'React Native Lagos',
+//     'Frontend Developer Lagos',
+//     'Software Engineer Nigeria',
+//     // Adjacent roles
 //     'Technical Writer',
 //     'Developer Advocate',
-//     'Product Manager Tech',
-//     'UX Developer',
-//     'No-code Developer',
-//     'Customer Success Engineer',
-//     'Technical Recruiter',
 //     'Solutions Engineer',
 //   ];
 
@@ -1169,6 +1519,9 @@
 //     safe(fetchStackOverflowJobs(keywords.slice(0, 3))),
 //     safe(fetchJobberman(keywords.slice(0, 4))),
 //     safe(fetchMyJobMag(keywords.slice(0, 3))),
+//     safe(fetchNgCareersRSS(keywords.slice(0, 3))),
+//     safe(fetchOfferZen(keywords.slice(0, 3))),
+//     safe(fetchAndela(keywords.slice(0, 3))),
 //     safe(fetchWellfound(keywords.slice(0, 3))),
 //     safe(fetchWorkable()),
 //     safe(fetchDevITJobs(keywords.slice(0, 2))),
@@ -1179,6 +1532,10 @@
 //     safe(fetchJobgether(keywords.slice(0, 3))),
 //     safe(fetchTrulyRemote(keywords.slice(0, 3))),
 //     safe(fetchFreelancePlatforms(keywords.slice(0, 2))),
+//     safe(fetchEuropeJobs(keywords)),
+//     safe(fetchNoFluffJobs(keywords.slice(0, 4))),
+//     safe(fetchRelocateMe(keywords.slice(0, 3))),
+//     safe(fetchAfricaTechJobs(keywords)),
 //   ])).flat();
 
 //   const deduped = smartDedupe(all);
@@ -1386,7 +1743,12 @@
 
 //   // Location bonuses
 //   if (/remote/i.test(job.location || '')) { score += 5; reasons.push('Remote position'); }
-//   if (/nigeria|lagos|ibadan/i.test(job.location || '')) { score += 8; reasons.push('Nigeria/local role'); }
+//   if (/nigeria|lagos|ibadan|abuja|west africa|africa/i.test(job.location || '')) { score += 12; reasons.push('Nigeria/Africa role'); }
+
+//   // Level matching — junior/mid roles are good fits
+//   if (/junior|entry.level|associate|graduate|mid.level|middle/i.test(job.title)) {
+//     score += 8; reasons.push('Junior/mid level role');
+//   }
 
 //   // Penalize clearly irrelevant roles (non-tech that slipped through)
 //   if (/beautician|kosmetik|minijob|controlling|buchhalt|marketing manager|hr manager/i.test(job.title)) {
@@ -1771,6 +2133,8 @@ async function fetchAdzuna(keywords: string[], locations: string[]): Promise<Raw
         for (const job of data.results || []) {
           if (!isRecentJob(job.created)) continue;
           const emailMatch = job.description?.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+          // Use adref (direct company URL) if available — avoids geo-blocked redirect_url
+          const applyUrl = job.adref || job.redirect_url;
           results.push({
             title: job.title,
             company: job.company?.display_name || 'Unknown',
@@ -1779,7 +2143,7 @@ async function fetchAdzuna(keywords: string[], locations: string[]): Promise<Raw
             description: (job.description || '').slice(0, 2000),
             requirements: extractRequirements(job.description || ''),
             nice_to_have: [],
-            apply_url: job.redirect_url,
+            apply_url: applyUrl,
             apply_email: emailMatch?.[0],
             application_method: emailMatch ? 'email' : 'manual',
             source: 'adzuna',
@@ -2466,7 +2830,7 @@ async function fetchAdzunaGlobal(keywords: string[]): Promise<RawJobData[]> {
   const appKey = process.env.ADZUNA_APP_KEY;
   if (!appId || !appKey) return [];
   const results: RawJobData[] = [];
-  // Comprehensive global country list
+  // Full global country list — Adzuna supported countries
   const countries = [
     { code: 'ng', currency: 'NGN', label: 'Nigeria' },
     { code: 'gb', currency: 'GBP', label: 'United Kingdom' },
@@ -2480,6 +2844,20 @@ async function fetchAdzunaGlobal(keywords: string[]): Promise<RawJobData[]> {
     { code: 'in', currency: 'INR', label: 'India' },
     { code: 'sg', currency: 'SGD', label: 'Singapore' },
     { code: 'nz', currency: 'NZD', label: 'New Zealand' },
+    { code: 'at', currency: 'EUR', label: 'Austria' },
+    { code: 'be', currency: 'EUR', label: 'Belgium' },
+    { code: 'br', currency: 'BRL', label: 'Brazil' },
+    { code: 'mx', currency: 'MXN', label: 'Mexico' },
+    { code: 'pl', currency: 'PLN', label: 'Poland' },
+    { code: 'ru', currency: 'RUB', label: 'Russia' },
+    { code: 'it', currency: 'EUR', label: 'Italy' },
+    { code: 'es', currency: 'EUR', label: 'Spain' },
+    { code: 'ch', currency: 'CHF', label: 'Switzerland' },
+    { code: 'se', currency: 'SEK', label: 'Sweden' },
+    { code: 'no', currency: 'NOK', label: 'Norway' },
+    { code: 'dk', currency: 'DKK', label: 'Denmark' },
+    { code: 'fi', currency: 'EUR', label: 'Finland' },
+    { code: 'ae', currency: 'AED', label: 'UAE' },
   ];
   for (const country of countries) {
     for (const kw of keywords.slice(0, 2)) {
@@ -2500,7 +2878,7 @@ async function fetchAdzunaGlobal(keywords: string[]): Promise<RawJobData[]> {
             description: (job.description || '').slice(0, 2000),
             requirements: extractRequirements(job.description || ''),
             nice_to_have: [],
-            apply_url: job.redirect_url,
+            apply_url: job.adref || job.redirect_url,
             apply_email: emailMatch?.[0],
             application_method: emailMatch ? 'email' : 'manual',
             source: `adzuna_${country.code}`,
@@ -2648,42 +3026,488 @@ async function fetchFreelancePlatforms(keywords: string[]): Promise<RawJobData[]
   return results;
 }
 
+// ─── SOURCE: EUREMOTEJOBS / JOBSINEUROPE ─────────────────────────────────
+// Free RSS feeds covering Finland, Spain, Malta, Netherlands, Germany etc.
+
+async function fetchEuropeJobs(keywords: string[]): Promise<RawJobData[]> {
+  const results: RawJobData[] = [];
+
+  // EuroJobSites RSS — covers all EU countries
+  const feeds = [
+    { url: 'https://www.eurojobs.com/rss/', label: 'Europe' },
+    { url: 'https://www.jobsinfinland.fi/rss', label: 'Finland' },
+    { url: 'https://www.jobsinbarcelona.es/rss', label: 'Spain' },
+    { url: 'https://www.irishjobs.ie/Recruitment/RSS.aspx', label: 'Ireland' },
+    { url: 'https://careers.eu/rss', label: 'Europe' },
+  ];
+
+  for (const feed of feeds) {
+    try {
+      const res = await fetchWithRetry(feed.url,
+        { headers: { 'Accept': 'application/rss+xml, text/xml' } }
+      );
+      if (!res.ok) continue;
+      const xml = await res.text();
+      const items = xml.match(/<item>([\s\S]*?)<\/item>/g) || [];
+      for (const item of items.slice(0, 15)) {
+        const title = stripXML(item.match(/<title>([\s\S]*?)<\/title>/)?.[1] || '');
+        const link = stripXML(item.match(/<link>([\s\S]*?)<\/link>/)?.[1] || '').trim();
+        const desc = stripXML(item.match(/<description>([\s\S]*?)<\/description>/)?.[1] || '');
+        const guid = item.match(/<guid[^>]*>([\s\S]*?)<\/guid>/)?.[1] || link;
+        if (!title || !link) continue;
+        const combined = (title + ' ' + desc).toLowerCase();
+        if (!keywords.some(k => combined.includes(k.toLowerCase()))) continue;
+        const cleanDesc = desc.slice(0, 2000);
+        results.push({
+          title, company: 'See listing',
+          location: feed.label,
+          job_type: /remote/i.test(combined) ? 'remote' : 'onsite',
+          description: cleanDesc,
+          requirements: extractRequirements(cleanDesc),
+          nice_to_have: [],
+          apply_url: link,
+          apply_email: extractEmail(cleanDesc),
+          application_method: extractEmail(cleanDesc) ? 'email' : 'form',
+          source: 'eurojobs',
+          source_id: String(guid).split('/').pop()?.slice(0, 60) || String(i),
+        });
+      }
+    } catch (e) { console.warn('[EuroJobs]', e); }
+  }
+  return results;
+}
+
+// ─── SOURCE: NO FLUFF JOBS (Poland/EU tech jobs) ─────────────────────────
+
+async function fetchNoFluffJobs(keywords: string[]): Promise<RawJobData[]> {
+  const results: RawJobData[] = [];
+  try {
+    const res = await fetchWithRetry(
+      'https://nofluffjobs.com/api/joboffers/main?salaryCurrency=USD&salaryPeriod=month&region=worldwide',
+      { headers: { 'Accept': 'application/json', 'X-NFJOBS-API': '1' } }
+    );
+    if (!res.ok) return results;
+    const data = await res.json();
+    for (const job of (data.postings || data.items || []).slice(0, 30)) {
+      const title = job.title || job.name || '';
+      const combined = (title + ' ' + (job.technology || []).join(' ')).toLowerCase();
+      if (!keywords.some(k => combined.includes(k.toLowerCase()))) continue;
+      const loc = job.location?.places?.[0]?.city || job.location?.fullyRemote ? 'Remote / Europe' : 'Poland/EU';
+      results.push({
+        title,
+        company: job.name || job.company?.name || 'Unknown',
+        location: job.location?.fullyRemote ? 'Remote / Europe' : loc,
+        job_type: job.location?.fullyRemote ? 'remote' : 'onsite',
+        description: (job.requirements?.join(', ') || title),
+        requirements: job.technology || extractRequirements(title),
+        nice_to_have: [],
+        apply_url: `https://nofluffjobs.com/job/${job.id}`,
+        application_method: 'form',
+        source: 'nofluffjobs',
+        source_id: String(job.id),
+        salary_min: job.salary?.from,
+        salary_max: job.salary?.to,
+        salary_currency: job.salary?.currency || 'USD',
+      });
+    }
+  } catch (e) { console.warn('[NoFluffJobs]', e); }
+  return results;
+}
+
+// ─── SOURCE: RELOCATE.ME (Europe + worldwide relocation jobs) ─────────────
+// Jobs that offer relocation packages — good for Nigeria → Europe
+
+async function fetchRelocateMe(keywords: string[]): Promise<RawJobData[]> {
+  const results: RawJobData[] = [];
+  for (const kw of keywords.slice(0, 3)) {
+    try {
+      const res = await fetchWithRetry(
+        `https://relocate.me/api/jobs?q=${encodeURIComponent(kw)}&limit=20`,
+        { headers: { 'Accept': 'application/json' } }
+      );
+      if (!res.ok) continue;
+      const data = await res.json();
+      for (const job of (data.jobs || data.data || []).slice(0, 15)) {
+        const desc = clean(job.description || '');
+        results.push({
+          title: job.title,
+          company: job.company?.name || 'Unknown',
+          location: job.country || job.city || 'Europe',
+          job_type: 'onsite',
+          description: desc,
+          requirements: extractRequirements(desc),
+          nice_to_have: [],
+          apply_url: job.url || `https://relocate.me/jobs/${job.id}`,
+          apply_email: extractEmail(desc),
+          application_method: extractEmail(desc) ? 'email' : 'form',
+          source: 'relocateme',
+          source_id: String(job.id),
+          salary_currency: 'EUR',
+        });
+      }
+    } catch (e) { console.warn('[Relocate.me]', e); }
+  }
+  return results;
+}
+
+// ─── SOURCE: TECH IN AFRICA / AFRICA TECH JOBS ───────────────────────────
+// Dedicated Africa tech job boards
+
+async function fetchAfricaTechJobs(keywords: string[]): Promise<RawJobData[]> {
+  const results: RawJobData[] = [];
+
+  // Tekedia — Nigeria tech jobs
+  try {
+    const res = await fetchWithRetry(
+      'https://tekedia.com/jobs/feed/',
+      { headers: { 'Accept': 'application/rss+xml, text/xml' } }
+    );
+    if (res.ok) {
+      const xml = await res.text();
+      const items = xml.match(/<item>([\s\S]*?)<\/item>/g) || [];
+      for (const item of items.slice(0, 20)) {
+        const title = stripXML(item.match(/<title>([\s\S]*?)<\/title>/)?.[1] || '');
+        const link = stripXML(item.match(/<link>([\s\S]*?)<\/link>/)?.[1] || '').trim();
+        const desc = stripXML(item.match(/<description>([\s\S]*?)<\/description>/)?.[1] || '');
+        const guid = item.match(/<guid[^>]*>([\s\S]*?)<\/guid>/)?.[1] || link;
+        if (!title || !link) continue;
+        const combined = (title + ' ' + desc).toLowerCase();
+        if (!keywords.some(k => combined.includes(k.toLowerCase()))) continue;
+        results.push({
+          title, company: 'See listing',
+          location: 'Nigeria',
+          job_type: /remote/i.test(combined) ? 'remote' : 'onsite',
+          description: desc.slice(0, 2000),
+          requirements: extractRequirements(desc),
+          nice_to_have: [],
+          apply_url: link,
+          apply_email: extractEmail(desc),
+          application_method: extractEmail(desc) ? 'email' : 'form',
+          source: 'tekedia',
+          source_id: String(guid).split('/').pop()?.slice(0, 60) || title.slice(0, 30),
+        });
+      }
+    }
+  } catch (e) { console.warn('[Tekedia]', e); }
+
+  // Rise Networks Nigeria
+  try {
+    const res = await fetchWithRetry(
+      'https://risenetworks.org/jobs/feed/',
+      { headers: { 'Accept': 'application/rss+xml, text/xml' } }
+    );
+    if (res.ok) {
+      const xml = await res.text();
+      const items = xml.match(/<item>([\s\S]*?)<\/item>/g) || [];
+      for (const item of items.slice(0, 15)) {
+        const title = stripXML(item.match(/<title>([\s\S]*?)<\/title>/)?.[1] || '');
+        const link = stripXML(item.match(/<link>([\s\S]*?)<\/link>/)?.[1] || '').trim();
+        const desc = stripXML(item.match(/<description>([\s\S]*?)<\/description>/)?.[1] || '');
+        const guid = item.match(/<guid[^>]*>([\s\S]*?)<\/guid>/)?.[1] || link;
+        if (!title || !link) continue;
+        const combined = (title + ' ' + desc).toLowerCase();
+        if (!keywords.some(k => combined.includes(k.toLowerCase()))) continue;
+        results.push({
+          title, company: 'See listing',
+          location: 'Lagos, Nigeria',
+          job_type: /remote/i.test(combined) ? 'remote' : 'onsite',
+          description: desc.slice(0, 2000),
+          requirements: extractRequirements(desc),
+          nice_to_have: [],
+          apply_url: link,
+          apply_email: extractEmail(desc),
+          application_method: extractEmail(desc) ? 'email' : 'form',
+          source: 'risenetworks',
+          source_id: String(guid).split('/').pop()?.slice(0, 60) || title.slice(0, 30),
+        });
+      }
+    }
+  } catch (e) { console.warn('[RiseNetworks]', e); }
+
+  return results;
+}
+
+// ─── SOURCE: VISA SPONSORSHIP JOBS ──────────────────────────────────────
+// Jobs that explicitly offer visa sponsorship — ideal for Nigeria → abroad
+
+async function fetchVisaSponsorshipJobs(keywords: string[]): Promise<RawJobData[]> {
+  const results: RawJobData[] = [];
+
+  // 1. Relocate.me — dedicated visa sponsorship platform
+  for (const kw of keywords.slice(0, 4)) {
+    try {
+      const res = await fetchWithRetry(
+        `https://relocate.me/search?search=${encodeURIComponent(kw)}&format=json`,
+        { headers: { 'Accept': 'application/json' } }
+      );
+      if (res.ok) {
+        const data = await res.json();
+        for (const job of (data.jobs || data.data || []).slice(0, 15)) {
+          const desc = clean(job.description || '');
+          results.push({
+            title: job.title,
+            company: job.company?.name || job.company || 'Unknown',
+            location: `${job.city || ''} ${job.country || 'Europe'}`.trim(),
+            job_type: 'onsite',
+            description: desc || `${job.title} — Visa sponsorship available. ${job.country || 'Europe'}.`,
+            requirements: extractRequirements(desc),
+            nice_to_have: [],
+            apply_url: job.url || `https://relocate.me/jobs/${job.id}`,
+            apply_email: extractEmail(desc),
+            application_method: extractEmail(desc) ? 'email' : 'form',
+            source: 'relocateme',
+            source_id: String(job.id || job.slug),
+            salary_currency: 'EUR',
+          });
+        }
+      }
+    } catch (e) { console.warn('[Relocate.me]', e); }
+  }
+
+  // 2. Berlin Startup Jobs — Germany visa sponsorship common
+  for (const kw of keywords.slice(0, 3)) {
+    try {
+      const res = await fetchWithRetry(
+        `https://berlinstartupjobs.com/api/jobs?q=${encodeURIComponent(kw)}&visa=true`,
+        { headers: { 'Accept': 'application/json' } }
+      );
+      if (res.ok) {
+        const data = await res.json();
+        for (const job of (data.jobs || data.data || []).slice(0, 15)) {
+          const desc = clean(job.description || '');
+          results.push({
+            title: job.title,
+            company: job.company || 'Unknown',
+            location: job.location || 'Berlin, Germany',
+            job_type: /remote/i.test(job.location || '') ? 'remote' : 'onsite',
+            description: desc,
+            requirements: extractRequirements(desc),
+            nice_to_have: [],
+            apply_url: job.url || `https://berlinstartupjobs.com/job/${job.id}`,
+            apply_email: extractEmail(desc),
+            application_method: extractEmail(desc) ? 'email' : 'form',
+            source: 'berlinstartup',
+            source_id: String(job.id),
+            salary_currency: 'EUR',
+          });
+        }
+      }
+    } catch (e) { console.warn('[BerlinStartup]', e); }
+  }
+
+  // 3. Visa-sponsoring companies — scrape their career pages directly
+  //    These companies are known to hire Africans/Nigerians and sponsor visas
+  const visaFriendlyCompanies = [
+    // European companies that actively hire from Africa
+    { greenhouse: 'transferwise', label: 'Wise (UK/EU)' },
+    { greenhouse: 'booking', label: 'Booking.com (Netherlands)' },
+    { greenhouse: 'adyen', label: 'Adyen (Netherlands)' },
+    { greenhouse: 'spotify', label: 'Spotify (Sweden)' },
+    { greenhouse: 'klarna', label: 'Klarna (Sweden)' },
+    { greenhouse: 'deliveryhero', label: 'Delivery Hero (Germany)' },
+    { greenhouse: 'n26', label: 'N26 (Germany)' },
+    { greenhouse: 'sumup', label: 'SumUp (Germany/EU)' },
+    // Global remote-first companies that hire from Africa
+    { greenhouse: 'remote', label: 'Remote.com (Worldwide)' },
+    { greenhouse: 'deel', label: 'Deel (Worldwide)' },
+    { greenhouse: 'oyster', label: 'Oyster HR (Worldwide)' },
+    { lever: 'automattic', label: 'Automattic (100% Remote)' },
+    { lever: 'gitlab', label: 'GitLab (100% Remote)' },
+    { lever: 'doist', label: 'Doist (100% Remote)' },
+    { lever: 'basecamp', label: 'Basecamp (100% Remote)' },
+    // African-focused tech companies
+    { greenhouse: 'flutterwave', label: 'Flutterwave (Nigeria)' },
+    { greenhouse: 'paystack', label: 'Paystack (Nigeria)' },
+    { workable: 'andela', label: 'Andela (Africa)' },
+    { workable: 'chipper', label: 'Chipper Cash (Africa)' },
+  ];
+
+  for (const co of visaFriendlyCompanies) {
+    try {
+      let url = '';
+      if ('greenhouse' in co) url = `https://boards-api.greenhouse.io/v1/boards/${co.greenhouse}/jobs?content=true`;
+      else if ('lever' in co) url = `https://api.lever.co/v0/postings/${co.lever}?mode=json`;
+      else if ('workable' in co) url = `https://apply.workable.com/api/v3/accounts/${co.workable}/jobs`;
+
+      const res = await fetchWithRetry(url);
+      if (!res.ok) continue;
+      const data = await res.json();
+      const jobs = data.jobs || data.results || data || [];
+
+      for (const job of (Array.isArray(jobs) ? jobs : []).slice(0, 8)) {
+        const title = job.title || job.text || '';
+        const titleLower = title.toLowerCase();
+        if (!['react', 'native', 'frontend', 'mobile', 'javascript', 'typescript', 'engineer', 'developer'].some(k => titleLower.includes(k))) continue;
+        const desc = clean(job.content || job.description || job.descriptionPlain || '');
+        const applyUrl = job.absolute_url || job.hostedUrl
+          || ('greenhouse' in co ? `https://boards.greenhouse.io/${co.greenhouse}/jobs/${job.id}` : '')
+          || ('lever' in co ? `https://jobs.lever.co/${co.lever}/${job.id}` : '')
+          || ('workable' in co ? `https://apply.workable.com/${co.workable}/j/${job.shortcode}/` : '');
+
+        results.push({
+          title,
+          company: co.label,
+          location: job.location?.name || job.categories?.location || 'Remote / Worldwide',
+          job_type: /remote/i.test(title + (job.location?.name || '')) ? 'remote' : 'onsite',
+          description: desc || `${title} at ${co.label}`,
+          requirements: extractRequirements(desc),
+          nice_to_have: [],
+          apply_url: applyUrl,
+          apply_email: extractEmail(desc),
+          application_method: extractEmail(desc) ? 'email' : 'form',
+          source: 'visa_friendly',
+          source_id: `${co.label.replace(/\s/g, '-')}-${job.id || job.shortcode}`,
+        });
+      }
+    } catch { /* silent */ }
+  }
+
+  return results;
+}
+
+// ─── SOURCE: GLOBAL REMOTE COMPANIES (hire from anywhere) ────────────────
+// Companies with public "we hire everywhere" policies
+
+async function fetchGlobalRemoteBoards(keywords: string[]): Promise<RawJobData[]> {
+  const results: RawJobData[] = [];
+
+  // Remote.com job board — they list jobs open to all countries
+  for (const kw of keywords.slice(0, 4)) {
+    try {
+      const res = await fetchWithRetry(
+        `https://remote.com/jobs?search=${encodeURIComponent(kw)}&format=json`,
+        { headers: { 'Accept': 'application/json' } }
+      );
+      if (res.ok) {
+        const data = await res.json();
+        for (const job of (data.jobs || data.data || []).slice(0, 15)) {
+          const desc = clean(job.description || '');
+          results.push({
+            title: job.title,
+            company: job.company_name || job.company || 'Unknown',
+            location: 'Remote / Worldwide',
+            job_type: 'remote',
+            description: desc,
+            requirements: extractRequirements(desc),
+            nice_to_have: [],
+            apply_url: job.url || job.apply_url || `https://remote.com/jobs/${job.slug || job.id}`,
+            apply_email: extractEmail(desc),
+            application_method: extractEmail(desc) ? 'email' : 'form',
+            source: 'remotecom',
+            source_id: String(job.id || job.slug),
+          });
+        }
+      }
+    } catch (e) { console.warn('[Remote.com]', e); }
+  }
+
+  // Remotive — tag: open to all countries
+  try {
+    const res = await fetchWithRetry(
+      'https://remotive.com/api/remote-jobs?category=software-dev&limit=50',
+      { headers: { 'User-Agent': 'JobHunterApp/1.0' } }
+    );
+    if (res.ok) {
+      const data = await res.json();
+      for (const job of (data.jobs || []).slice(0, 30)) {
+        const region = (job.candidate_required_location || '').toLowerCase();
+        // Only keep worldwide/anywhere jobs
+        if (region && !['worldwide', 'anywhere', 'global', ''].includes(region) &&
+            !region.includes('africa') && !region.includes('nigeria')) continue;
+        const desc = clean(job.description);
+        const combined = (job.title + ' ' + desc).toLowerCase();
+        if (!['react native', 'mobile', 'frontend', 'react', 'javascript', 'typescript'].some(k => combined.includes(k))) continue;
+        results.push({
+          title: job.title,
+          company: job.company_name,
+          location: 'Remote / Worldwide',
+          job_type: 'remote',
+          description: desc,
+          requirements: extractRequirements(desc),
+          nice_to_have: [],
+          apply_url: job.url,
+          apply_email: extractEmail(desc),
+          application_method: extractEmail(desc) ? 'email' : 'form',
+          source: 'remotive_worldwide',
+          source_id: String(job.id),
+        });
+      }
+    }
+  } catch (e) { console.warn('[Remotive Worldwide]', e); }
+
+  // Wellfound (AngelList) — filter for remote + worldwide
+  for (const kw of keywords.slice(0, 3)) {
+    try {
+      const res = await fetchWithRetry(
+        `https://wellfound.com/jobs?role=${encodeURIComponent(kw)}&remote=true&visa=true&format=json`,
+        { headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' } }
+      );
+      if (res.ok) {
+        const data = await res.json();
+        for (const job of (data.jobs || data.data || []).slice(0, 15)) {
+          const desc = clean(job.description || '');
+          results.push({
+            title: job.title || job.job_listing?.title,
+            company: job.startup?.name || job.company || 'Startup',
+            location: 'Remote / Worldwide',
+            job_type: 'remote',
+            description: desc,
+            requirements: extractRequirements(desc),
+            nice_to_have: [],
+            apply_url: `https://wellfound.com/jobs/${job.id}`,
+            apply_email: extractEmail(desc),
+            application_method: extractEmail(desc) ? 'email' : 'form',
+            source: 'wellfound_visa',
+            source_id: String(job.id),
+          });
+        }
+      }
+    } catch (e) { console.warn('[Wellfound Visa]', e); }
+  }
+
+  return results;
+}
+
 // ─── MAIN SEARCH FUNCTION ─────────────────────────────────────────────────
 
 export async function searchForJobs(profile: UserProfile): Promise<
   Array<Omit<Job, 'id' | 'user_id' | 'created_at' | 'updated_at'>>
 > {
-  // Broad keywords — junior/mid/senior + Nigeria-specific
+  // Keywords targeting: global hiring, visa sponsorship, Africa-friendly companies
   const keywords = [
-    // React Native — all levels
+    // Core skills — what you offer
     'React Native Developer',
-    'Junior React Native Developer',
-    'Mid React Native Developer',
     'React Native',
-    // Mobile — all levels
-    'Mobile App Developer',
-    'Junior Mobile Developer',
     'Mobile Developer',
-    'Mobile Engineer',
-    'Cross Platform Developer',
-    'Expo Developer',
-    // Frontend — all levels
-    'Junior Frontend Developer',
     'Frontend Developer',
     'React Developer',
     'JavaScript Developer',
     'TypeScript Developer',
-    'Next.js Developer',
-    // Nigeria/Africa specific
-    'Software Developer Nigeria',
-    'Remote Developer Nigeria',
-    'React Native Lagos',
+    // Junior/mid level — realistic for 4 years exp
+    'Junior React Native',
+    'Mid-level React Native',
+    'Junior Mobile Developer',
+    'Junior Frontend Developer',
+    // Visa sponsorship — explicit
+    'React Native visa sponsorship',
+    'Frontend Developer visa sponsorship',
+    'Mobile Developer visa sponsorship',
+    'React Developer relocation package',
+    'Software Engineer relocation',
+    // Remote worldwide — companies that hire from Africa
+    'React Native remote worldwide',
+    'Frontend Developer remote global',
+    'Mobile Engineer remote anywhere',
+    'React Developer remote africa',
+    // Nigeria / Africa local
+    'React Native Nigeria',
     'Frontend Developer Lagos',
-    'Software Engineer Nigeria',
-    // Adjacent roles
-    'Technical Writer',
-    'Developer Advocate',
-    'Solutions Engineer',
+    'Software Developer Nigeria',
+    'Mobile Developer Africa',
+    // Andela-style network keywords
+    'React Native contract remote',
+    'Frontend Engineer contract',
+    'Mobile Engineer freelance',
   ];
 
   // Wrap every source — no single failure can crash the whole search
@@ -2721,6 +3545,12 @@ export async function searchForJobs(profile: UserProfile): Promise<
     safe(fetchJobgether(keywords.slice(0, 3))),
     safe(fetchTrulyRemote(keywords.slice(0, 3))),
     safe(fetchFreelancePlatforms(keywords.slice(0, 2))),
+    safe(fetchEuropeJobs(keywords)),
+    safe(fetchNoFluffJobs(keywords.slice(0, 4))),
+    safe(fetchRelocateMe(keywords.slice(0, 3))),
+    safe(fetchAfricaTechJobs(keywords)),
+    safe(fetchVisaSponsorshipJobs(keywords.slice(0, 5))),
+    safe(fetchGlobalRemoteBoards(keywords.slice(0, 4))),
   ])).flat();
 
   const deduped = smartDedupe(all);
@@ -2933,6 +3763,18 @@ function keywordScore(
   // Level matching — junior/mid roles are good fits
   if (/junior|entry.level|associate|graduate|mid.level|middle/i.test(job.title)) {
     score += 8; reasons.push('Junior/mid level role');
+  }
+
+  // Visa sponsorship / relocation / worldwide hiring bonus
+  const fullText = (job.title + ' ' + (job.description || '')).toLowerCase();
+  if (/visa sponsorship|visa support|work permit|relocation (package|support|bonus)|we sponsor/i.test(fullText)) {
+    score += 15; reasons.push('Visa sponsorship offered');
+  }
+  if (/hire.*(worldwide|globally|anywhere|all countries|from africa)|open to.*world|global.*team|distributed.*team/i.test(fullText)) {
+    score += 10; reasons.push('Hires globally / from Africa');
+  }
+  if (/source: 'visa_friendly'|source: 'relocateme'|source: 'remotecom'/i.test(JSON.stringify(job))) {
+    score += 8; reasons.push('Visa-friendly company');
   }
 
   // Penalize clearly irrelevant roles (non-tech that slipped through)
