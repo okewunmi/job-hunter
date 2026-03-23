@@ -3069,7 +3069,7 @@ async function fetchEuropeJobs(keywords: string[]): Promise<RawJobData[]> {
           apply_email: extractEmail(cleanDesc),
           application_method: extractEmail(cleanDesc) ? 'email' : 'form',
           source: 'eurojobs',
-          source_id: String(guid).split('/').pop()?.slice(0, 60) || String(i),
+          source_id: String(guid).split('/').pop()?.slice(0, 60) || title.slice(0, 40),
         });
       }
     } catch (e) { console.warn('[EuroJobs]', e); }
