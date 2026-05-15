@@ -150,7 +150,7 @@ import {
   LayoutDashboard, Briefcase, FileText, Settings,
   Zap, RefreshCw, ChevronRight, Menu, X
 } from 'lucide-react';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import toast from 'react-hot-toast';
 
 const navItems = [
@@ -164,6 +164,16 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const pathname = usePathname();
   const [scanning, setScanning] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+
+  // Handle Supabase auth tokens that land as URL path e.g. /dashboard/eyJhbG...
+  // Use replaceState so it never affects routing — purely cosmetic URL fix
+  useEffect(() => {
+    const segments = window.location.pathname.split('/').filter(Boolean);
+    const hasJWT = segments.some(s => s.startsWith('eyJ') && s.includes('.'));
+    if (hasJWT) {
+      window.history.replaceState({}, '', '/dashboard');
+    }
+  }, []);
 
   async function triggerScan() {
     setScanning(true);
@@ -317,10 +327,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         </button>
       </div>
 
-      {/* Mobile overlay */}
+      {/* Mobile overlay + drawer */}
       {mobileOpen && <div className="mobile-overlay" onClick={() => setMobileOpen(false)} />}
-
-      {/* Mobile drawer */}
       {mobileOpen && (
         <aside className="mobile-sidebar">
           <SidebarContent />

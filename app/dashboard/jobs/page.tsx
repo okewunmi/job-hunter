@@ -201,11 +201,19 @@ function JobCard({ job, onStatusChange, onGenerateCoverLetter }: {
           )}
 
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <a href={job.apply_url} target="_blank" rel="noopener noreferrer"
+
+            <a href={job.apply_url?.startsWith('http') ? job.apply_url : '#'}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={e => {
+                if (!job.apply_url?.startsWith('http')) {
+                  e.preventDefault();
+                  toast.error('No valid apply link for this job — apply manually');
+                }
+              }}
               style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: 'linear-gradient(135deg, #1e40af, #1d4ed8)', color: 'white', padding: '8px 16px', borderRadius: 8, fontSize: 13, fontWeight: 600, textDecoration: 'none' }}>
               <Globe size={14} /> View Job
             </a>
-
             {job.apply_email && (job.status === 'found' || job.status === 'needs_manual_apply') && (
               <button onClick={handleApplyEmail} disabled={applying}
                 style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: 'rgba(16,185,129,0.15)', border: '1px solid rgba(16,185,129,0.3)', color: '#34d399', padding: '8px 16px', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'var(--font-sans)' }}>
@@ -288,9 +296,9 @@ function JobsInner() {
 
   const filtered = search
     ? jobs.filter(j =>
-        j.title.toLowerCase().includes(search.toLowerCase()) ||
-        j.company.toLowerCase().includes(search.toLowerCase())
-      )
+      j.title.toLowerCase().includes(search.toLowerCase()) ||
+      j.company.toLowerCase().includes(search.toLowerCase())
+    )
     : jobs;
 
   return (

@@ -1110,7 +1110,7 @@
 //             description: (job.description || '').slice(0, 2000),
 //             requirements: extractRequirements(job.description || ''),
 //             nice_to_have: [],
-//             apply_url: job.adref || job.redirect_url,
+//             apply_url: safeUrl(job.adref) || safeUrl(job.redirect_url) || '',,
 //             apply_email: emailMatch?.[0],
 //             application_method: emailMatch ? 'email' : 'manual',
 //             source: `adzuna_${country.code}`,
@@ -2878,7 +2878,7 @@ async function fetchAdzunaGlobal(keywords: string[]): Promise<RawJobData[]> {
             description: (job.description || '').slice(0, 2000),
             requirements: extractRequirements(job.description || ''),
             nice_to_have: [],
-            apply_url: job.adref || job.redirect_url,
+            apply_url: safeUrl(job.adref) || safeUrl(job.redirect_url) || '',
             apply_email: emailMatch?.[0],
             application_method: emailMatch ? 'email' : 'manual',
             source: `adzuna_${country.code}`,
@@ -3669,6 +3669,18 @@ function normalize(s: string): string {
 
 function clean(html: string = ''): string {
   return html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 2000);
+}
+
+// Ensures apply_url is always a valid absolute URL — never a bare JWT or relative path
+function safeUrl(url: string | undefined | null, fallback?: string): string {
+  if (!url) return fallback || '';
+  // Already a valid absolute URL
+  if (url.startsWith('http://') || url.startsWith('https://')) return url;
+  // Looks like an Adzuna JWT redirect token — unusable, use fallback
+  if (url.startsWith('eyJ')) return fallback || '';
+  // Relative path — prepend https
+  if (url.startsWith('/')) return `https://adzuna.com${url}`;
+  return fallback || '';
 }
 
 function extractRequirements(description: string): string[] {
